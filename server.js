@@ -22,92 +22,32 @@ io.on('connection', (socket) => {
         const { ip, count, names, antiAfk } = data;
         if (!ip) return;
 
-        let host = ip.trim();
-        let serverPort = 25565;
+        let cleanInput = ip.trim();
+        let targetHost = cleanInput;
+        let targetPort = 25565;
 
-        // Jeśli podano port z dwukropkiem (np. serwer.aternos.me:27447)
-        if (host.includes(':')) {
-            const parts = host.split(':');
-            host = parts[0];
-            serverPort = parseInt(parts[1], 10) || 25565;
-        }
-
-        console.log(`[BotManager] Uruchamianie ${count} botow dla ${host}:${serverPort} (Klient: ${socket.id})`);
-        io.emit('bot-log', { text: `[System] Próba spawnu ${count} botow na ${host}:${serverPort}...`, type: 'info' });
-
-        const RANDOM_PREFIXES = ['Kacper', 'Bartek', 'Stasiek', 'Mat', 'Pro', 'Xx', 'Super', 'Hyper', 'Shadow', 'Craft', 'Builder'];
-        
-        for (let i = 0; i < count; i++) {
-            let botName = names && names[i] ? names[i] : `${RANDOM_PREFIXES[Math.floor(Math.random() * RANDOM_PREFIXES.length)]}${Math.floor(Math.random() * 900) + 100}`;
+        // Jeśli użytkownik wpisał z portem (np. aternos:12345)
+        if (cleanInput.includes(':')) {
+            const parts = cleanInput.split(':');
+            targetHost = parts[0];
+            targetPort = parseInt(parts[1], 10) || 25565;
+            spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
+        } else {
+            // Automatyczne sprawdzanie portu SRV dla Aternosa / serwerów Minecraft
+            io.emit('bot-log', { text: `[System] Pobieranie danych DNS dla ${targetHost}...`, type: 'info' });
             
-            if (activeBots.some(b => b.name === botName)) {
-                botName = `${botName}_${i}`;
-            }
-
-            try {
-                const botOptions = {
-                    host: host,
-                    port: serverPort,
-                    username: botName,
-                    version: false // Automatyczne dopasowanie wersji
-                };
-
-                const bot = mineflayer.createBot(botOptions);
-
-                const botData = {
-                    name: botName,
-                    status: 'Laczenie...',
-                    instance: bot,
-                    antiAfkInterval: null,
-                    ownerSocket: socket.id
-                };
-
-                activeBots.push(botData);
-                updateClients(io);
-
-                bot.on('spawn', () => {
-                    botData.status = 'W grze';
-                    updateClients(io);
-                    io.emit('bot-log', { text: `[${botName}] Dolaczyl do serwera!`, type: 'success' });
-
-                    if (antiAfk) {
-                        botData.antiAfkInterval = setInterval(() => {
-                            try {
-                                bot.setControlState('jump', true);
-                                setTimeout(() => bot.setControlState('jump', false), 400);
-                            } catch (e) {}
-                        }, 35000);
-                    }
-                });
-
-                bot.on('chat', (username, message) => {
-                    if (username === botName) return;
-                    io.emit('bot-log', { text: `<${username}> ${message}`, type: 'chat' });
-                });
-
-                bot.on('kicked', (reason) => {
-                    botData.status = 'Wyrzucony';
-                    updateClients(io);
-                    let cleanReason = typeof reason === 'string' ? reason : JSON.stringify(reason);
-                    io.emit('bot-log', { text: `[${botName}] Wyrzucony z serwera! Powod: ${cleanReason}`, type: 'error' });
-                });
-
-                bot.on('error', (err) => {
-                    botData.status = 'Blad';
-                    updateClients(io);
-                    io.emit('bot-log', { text: `[${botName}] Blad mineflayer: ${err.message}`, type: 'error' });
-                });
-
-                bot.on('end', (reason) => {
-                    if (botData.antiAfkInterval) clearInterval(botData.antiAfkInterval);
-                    botData.status = 'Rozlaczony';
-                    updateClients(io);
-                    io.emit('bot-log', { text: `[${botName}] Rozlaczony. Powod: ${reason}`, type: 'error' });
-                });
-
-            } catch (err) {
-                io.emit('bot-log', { text: `[System] Blad tworzenia bota ${botName}: ${err.message}`, type: 'error' });
-            }
+            dns.resolveSrv(`_minecraft._tcp.${targetHost}`, (err, addresses) => {
+                if (!err && addresses && addresses.length > 0) {
+                    targetHost = addresses[0].name;
+                    targetPort = addresses[0].port;
+                    io.emit('bot-log', { text: `[System] Wykryto port Aternosa automatycznie: ${targetHost}:${targetPort}`, type: 'success' });
+                    spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
+                } else {
+                    // Fallback jeśli SRV nie zwróci wyniku, próba domyślnego
+                    io.emit('bot-log', { text: `[System] Brak rekordu SRV, próbuję domyślnego portu 25565 dla ${targetHost}`, type: 'info' });
+                    spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
+                }
+            });
         }
     });
 
@@ -134,6 +74,84 @@ io.on('connection', (socket) => {
         console.log(`[Backend] Klient rozlaczony: ${socket.id}`);
     });
 });
+
+function spawnBots(host, port, count, names, antiAfk, socket, io) {
+    console.log(`[BotManager] Uruchamianie ${count} botow dla ${host}:${port}`);
+    io.emit('bot-log', { text: `[System] Próba spawnu ${count} botow na ${host}:${port}...`, type: 'info' });
+
+    const RANDOM_PREFIXES = ['Kacper', 'Bartek', 'Stasiek', 'Mat', 'Pro', 'Xx', 'Super', 'Hyper', 'Shadow', 'Craft', 'Builder'];
+
+    for (let i = 0; i < count; i++) {
+        let botName = names && names[i] ? names[i] : `${RANDOM_PREFIXES[Math.floor(Math.random() * RANDOM_PREFIXES.length)]}${Math.floor(Math.random() * 900) + 100}`;
+        
+        if (activeBots.some(b => b.name === botName)) {
+            botName = `${botName}_${i}`;
+        }
+
+        try {
+            const bot = mineflayer.createBot({
+                host: host,
+                port: port,
+                username: botName,
+                version: false
+            });
+
+            const botData = {
+                name: botName,
+                status: 'Laczenie...',
+                instance: bot,
+                antiAfkInterval: null,
+                ownerSocket: socket.id
+            };
+
+            activeBots.push(botData);
+            updateClients(io);
+
+            bot.on('spawn', () => {
+                botData.status = 'W grze';
+                updateClients(io);
+                io.emit('bot-log', { text: `[${botName}] Dolaczyl do serwera!`, type: 'success' });
+
+                if (antiAfk) {
+                    botData.antiAfkInterval = setInterval(() => {
+                        try {
+                            bot.setControlState('jump', true);
+                            setTimeout(() => bot.setControlState('jump', false), 400);
+                        } catch (e) {}
+                    }, 35000);
+                }
+            });
+
+            bot.on('chat', (username, message) => {
+                if (username === botName) return;
+                io.emit('bot-log', { text: `<${username}> ${message}`, type: 'chat' });
+            });
+
+            bot.on('kicked', (reason) => {
+                botData.status = 'Wyrzucony';
+                updateClients(io);
+                let cleanReason = typeof reason === 'string' ? reason : JSON.stringify(reason);
+                io.emit('bot-log', { text: `[${botName}] Wyrzucony z serwera! Powod: ${cleanReason}`, type: 'error' });
+            });
+
+            bot.on('error', (err) => {
+                botData.status = 'Blad';
+                updateClients(io);
+                io.emit('bot-log', { text: `[${botName}] Blad mineflayer: ${err.message}`, type: 'error' });
+            });
+
+            bot.on('end', (reason) => {
+                if (botData.antiAfkInterval) clearInterval(botData.antiAfkInterval);
+                botData.status = 'Rozlaczony';
+                updateClients(io);
+                io.emit('bot-log', { text: `[${botName}] Rozlaczony. Powod: ${reason}`, type: 'error' });
+            });
+
+        } catch (err) {
+            io.emit('bot-log', { text: `[System] Blad tworzenia bota ${botName}: ${err.message}`, type: 'error' });
+        }
+    }
+}
 
 function stopAllBots() {
     activeBots.forEach(b => {
