@@ -92,15 +92,21 @@ function spawnBots(host, port, count, names, antiAfk, socket, io) {
                 username: botName,
                 version: false,
                 skipValidation: true,
-                checkTimeoutInterval: 60000 // Zwiększenie czasu timeoutu połączenia do 60 sekund, żeby Aternos nie wyrzucał bota za wolne ładowanie
+                checkTimeoutInterval: 120000 // Wydłużenie timeoutu do 2 minut
             });
 
+            // Automatyczna akceptacja paczki zasobów
             bot._client.on('resource_pack_send', (packet) => {
                 io.emit('bot-log', { text: `[${botName}] Serwer żąda akceptacji paczki zasobów, akceptuję...`, type: 'info' });
                 bot._client.write('resource_pack_receive', {
                     uuid: packet.uuid,
                     result: 3
                 });
+            });
+
+            // Zapobieganie wyrzucaniu przez brak odpowiedzi na pakiety keep-alive / login state
+            bot._client.on('connect', () => {
+                bot._client.socket.setKeepAlive(true, 0);
             });
 
             const botData = {
@@ -115,7 +121,6 @@ function spawnBots(host, port, count, names, antiAfk, socket, io) {
             updateClients(io);
 
             bot.on('spawn', () => {
-                // Odczekaj 3 sekundy po spawnie przed zmianą statusu na "W grze", żeby serwer w pełni przepuścił bota
                 setTimeout(() => {
                     botData.status = 'W grze';
                     updateClients(io);
@@ -127,9 +132,9 @@ function spawnBots(host, port, count, names, antiAfk, socket, io) {
                                 bot.setControlState('jump', true);
                                 setTimeout(() => bot.setControlState('jump', false), 400);
                             } catch (e) {}
-                        }, 35000);
+                        }, 25000);
                     }
-                }, 3000);
+                }, 4000);
             });
 
             bot.on('chat', (username, message) => {
