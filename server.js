@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
+const dns = require('dns');
 
 const app = express();
 const server = http.createServer(app);
@@ -19,8 +20,17 @@ io.on('connection', (socket) => {
 
     socket.on('start-bots', (data) => {
         const { ip, count, names, antiAfk } = data;
-        const [host, port] = ip.split(':');
-        const serverPort = port ? parseInt(port) : 25565;
+        if (!ip) return;
+
+        // Automatyczne dopasowanie hosta i portu (np. z Aternosa typu adrs:port)
+        let host = ip.trim();
+        let serverPort = 25565;
+
+        if (host.includes(':')) {
+            const parts = host.split(':');
+            host = parts[0];
+            serverPort = parseInt(parts[1], 10) || 25565;
+        }
 
         console.log(`[BotManager] Uruchamianie ${count} botow dla ${host}:${serverPort} (Klient: ${socket.id})`);
         io.emit('bot-log', { text: `[System] Próba spawnu ${count} botow na ${host}:${serverPort}...`, type: 'info' });
@@ -140,7 +150,7 @@ function updateClients(ioInstance) {
     ioInstance.emit('bots-update', { bots: simplifiedBots });
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`[Backend] Serwer ruszył na porcie ${PORT}`);
 });
