@@ -26,14 +26,12 @@ io.on('connection', (socket) => {
         let targetHost = cleanInput;
         let targetPort = 25565;
 
-        // Jeśli użytkownik wpisał ręcznie z portem (np. aternos:12345)
         if (cleanInput.includes(':')) {
             const parts = cleanInput.split(':');
             targetHost = parts[0];
             targetPort = parseInt(parts[1], 10) || 25565;
             spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
         } else {
-            // Automatyczne sprawdzanie portu SRV dla Aternosa
             io.emit('bot-log', { text: `[System] Pobieranie danych DNS dla ${targetHost}...`, type: 'info' });
             
             dns.resolveSrv(`_minecraft._tcp.${targetHost}`, (err, addresses) => {
@@ -93,15 +91,15 @@ function spawnBots(host, port, count, names, antiAfk, socket, io) {
                 port: port,
                 username: botName,
                 version: false,
-                skipValidation: true
+                skipValidation: true,
+                checkTimeoutInterval: 60000 // Zwiększenie czasu timeoutu połączenia do 60 sekund, żeby Aternos nie wyrzucał bota za wolne ładowanie
             });
 
-            // Automatyczna akceptacja paczki zasobów od Aternosa/serwera, żeby bot nie zawisł
             bot._client.on('resource_pack_send', (packet) => {
                 io.emit('bot-log', { text: `[${botName}] Serwer żąda akceptacji paczki zasobów, akceptuję...`, type: 'info' });
                 bot._client.write('resource_pack_receive', {
                     uuid: packet.uuid,
-                    result: 3 // 3 = Zaakceptowano i pobrano
+                    result: 3
                 });
             });
 
@@ -117,18 +115,21 @@ function spawnBots(host, port, count, names, antiAfk, socket, io) {
             updateClients(io);
 
             bot.on('spawn', () => {
-                botData.status = 'W grze';
-                updateClients(io);
-                io.emit('bot-log', { text: `[${botName}] Dolaczyl do serwera!`, type: 'success' });
+                // Odczekaj 3 sekundy po spawnie przed zmianą statusu na "W grze", żeby serwer w pełni przepuścił bota
+                setTimeout(() => {
+                    botData.status = 'W grze';
+                    updateClients(io);
+                    io.emit('bot-log', { text: `[${botName}] Dolaczyl do serwera i ustabilizowal polaczenie!`, type: 'success' });
 
-                if (antiAfk) {
-                    botData.antiAfkInterval = setInterval(() => {
-                        try {
-                            bot.setControlState('jump', true);
-                            setTimeout(() => bot.setControlState('jump', false), 400);
-                        } catch (e) {}
-                    }, 35000);
-                }
+                    if (antiAfk) {
+                        botData.antiAfkInterval = setInterval(() => {
+                            try {
+                                bot.setControlState('jump', true);
+                                setTimeout(() => bot.setControlState('jump', false), 400);
+                            } catch (e) {}
+                        }, 35000);
+                    }
+                }, 3000);
             });
 
             bot.on('chat', (username, message) => {
