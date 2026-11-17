@@ -26,26 +26,25 @@ io.on('connection', (socket) => {
         let targetHost = cleanInput;
         let targetPort = 25565;
 
-        // Jeśli użytkownik wpisał z portem (np. aternos:12345)
+        // Jeśli użytkownik wpisał ręcznie z portem (np. aternos:12345)
         if (cleanInput.includes(':')) {
             const parts = cleanInput.split(':');
             targetHost = parts[0];
             targetPort = parseInt(parts[1], 10) || 25565;
             spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
         } else {
-            // Automatyczne sprawdzanie portu SRV dla Aternosa / serwerów Minecraft
+            // Automatyczne sprawdzanie portu SRV dla Aternosa
             io.emit('bot-log', { text: `[System] Pobieranie danych DNS dla ${targetHost}...`, type: 'info' });
             
             dns.resolveSrv(`_minecraft._tcp.${targetHost}`, (err, addresses) => {
                 if (!err && addresses && addresses.length > 0) {
                     targetHost = addresses[0].name;
                     targetPort = addresses[0].port;
-                    io.emit('bot-log', { text: `[System] Wykryto port Aternosa automatycznie: ${targetHost}:${targetPort}`, type: 'success' });
+                    io.emit('bot-log', { text: `[System] Wykryto port Aternosa: ${targetHost}:${targetPort}`, type: 'success' });
                     spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
                 } else {
-                    // Fallback jeśli SRV nie zwróci wyniku, próba domyślnego
-                    io.emit('bot-log', { text: `[System] Brak rekordu SRV, próbuję domyślnego portu 25565 dla ${targetHost}`, type: 'info' });
-                    spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
+                    io.emit('bot-log', { text: `[System] Brak rekordu SRV, próbuję połączyć się bezpośrednio z ${targetHost}:25565`, type: 'info' });
+                    spawnBots(targetHost, 25565, count, names, antiAfk, socket, io);
                 }
             });
         }
@@ -93,7 +92,17 @@ function spawnBots(host, port, count, names, antiAfk, socket, io) {
                 host: host,
                 port: port,
                 username: botName,
-                version: false
+                version: false,
+                skipValidation: true
+            });
+
+            // Automatyczna akceptacja paczki zasobów od Aternosa/serwera, żeby bot nie zawisł
+            bot._client.on('resource_pack_send', (packet) => {
+                io.emit('bot-log', { text: `[${botName}] Serwer żąda akceptacji paczki zasobów, akceptuję...`, type: 'info' });
+                bot._client.write('resource_pack_receive', {
+                    uuid: packet.uuid,
+                    result: 3 // 3 = Zaakceptowano i pobrano
+                });
             });
 
             const botData = {
