@@ -22,10 +22,10 @@ io.on('connection', (socket) => {
         const { ip, count, names, antiAfk } = data;
         if (!ip) return;
 
-        // Automatyczne dopasowanie hosta i portu (np. z Aternosa typu adrs:port)
         let host = ip.trim();
         let serverPort = 25565;
 
+        // Jeśli podano port z dwukropkiem (np. serwer.aternos.me:27447)
         if (host.includes(':')) {
             const parts = host.split(':');
             host = parts[0];
@@ -45,12 +45,14 @@ io.on('connection', (socket) => {
             }
 
             try {
-                const bot = mineflayer.createBot({
+                const botOptions = {
                     host: host,
                     port: serverPort,
                     username: botName,
-                    version: false
-                });
+                    version: false // Automatyczne dopasowanie wersji
+                };
+
+                const bot = mineflayer.createBot(botOptions);
 
                 const botData = {
                     name: botName,
