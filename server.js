@@ -30,7 +30,7 @@ io.on('connection', (socket) => {
             const parts = cleanInput.split(':');
             targetHost = parts[0];
             targetPort = parseInt(parts[1], 10) || 25565;
-            spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
+            spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, socket, io);
         } else {
             io.emit('bot-log', { text: `[System] Pobieranie danych DNS dla ${targetHost}...`, type: 'info' });
             
@@ -39,10 +39,10 @@ io.on('connection', (socket) => {
                     targetHost = addresses[0].name;
                     targetPort = addresses[0].port;
                     io.emit('bot-log', { text: `[System] Wykryto port Aternosa: ${targetHost}:${targetPort}`, type: 'success' });
-                    spawnBots(targetHost, targetPort, count, names, antiAfk, socket, io);
+                    spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, socket, io);
                 } else {
                     io.emit('bot-log', { text: `[System] Brak rekordu SRV, próbuję połączyć się bezpośrednio z ${targetHost}:25565`, type: 'info' });
-                    spawnBots(targetHost, 25565, count, names, antiAfk, socket, io);
+                    spawnBotsBatch(targetHost, 25565, count, names, antiAfk, socket, io);
                 }
             });
         }
@@ -72,99 +72,97 @@ io.on('connection', (socket) => {
     });
 });
 
-function spawnBots(host, port, count, names, antiAfk, socket, io) {
-    console.log(`[BotManager] Uruchamianie ${count} botow dla ${host}:${port}`);
-    io.emit('bot-log', { text: `[System] Próba spawnu ${count} botow na ${host}:${port}...`, type: 'info' });
+function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
+    console.log(`[BotManager] Kolejkowanie ${count} botow dla ${host}:${port}`);
+    io.emit('bot-log', { text: `[System] Rozpoczynam wchodzenie ${count} botów (po 1 co ~800ms, żeby nie dostać bana IP)...`, type: 'info' });
 
     const RANDOM_PREFIXES = ['Kacper', 'Bartek', 'Stasiek', 'Mat', 'Pro', 'Xx', 'Super', 'Hyper', 'Shadow', 'Craft', 'Builder'];
 
+    // Pętla z opóźnieniem (setTimeout), żeby boty wchodziły pojedynczo, a nie wszystkie naraz
     for (let i = 0; i < count; i++) {
-        let botName = names && names[i] ? names[i] : `${RANDOM_PREFIXES[Math.floor(Math.random() * RANDOM_PREFIXES.length)]}${Math.floor(Math.random() * 900) + 100}`;
-        
-        if (activeBots.some(b => b.name === botName)) {
-            botName = `${botName}_${i}`;
-        }
+        setTimeout(() => {
+            // Sprawdź czy sesja nie została zatrzymana w międzyczasie
+            if (socket.disconnected && activeBots.length === 0) return;
 
-        try {
-            const bot = mineflayer.createBot({
-                host: host,
-                port: port,
-                username: botName,
-                version: false,
-                skipValidation: true,
-                checkTimeoutInterval: 120000 // Wydłużenie timeoutu do 2 minut
-            });
+            let botName = names && names[i] ? names[i] : `${RANDOM_PREFIXES[Math.floor(Math.random() * RANDOM_PREFIXES.length)]}${Math.floor(Math.random() * 900) + 100}`;
+            
+            if (activeBots.some(b => b.name === botName)) {
+                botName = `${botName}_${i}`;
+            }
 
-            // Automatyczna akceptacja paczki zasobów
-            bot._client.on('resource_pack_send', (packet) => {
-                io.emit('bot-log', { text: `[${botName}] Serwer żąda akceptacji paczki zasobów, akceptuję...`, type: 'info' });
-                bot._client.write('resource_pack_receive', {
-                    uuid: packet.uuid,
-                    result: 3
+            try {
+                const bot = mineflayer.createBot({
+                    host: host,
+                    port: port,
+                    username: botName,
+                    version: false,
+                    skipValidation: true,
+                    checkTimeoutInterval: 120000
                 });
-            });
 
-            // Zapobieganie wyrzucaniu przez brak odpowiedzi na pakiety keep-alive / login state
-            bot._client.on('connect', () => {
-                bot._client.socket.setKeepAlive(true, 0);
-            });
+                bot._client.on('resource_pack_send', (packet) => {
+                    bot._client.write('resource_pack_receive', {
+                        uuid: packet.uuid,
+                        result: 3
+                    });
+                });
 
-            const botData = {
-                name: botName,
-                status: 'Laczenie...',
-                instance: bot,
-                antiAfkInterval: null,
-                ownerSocket: socket.id
-            };
+                bot._client.on('connect', () => {
+                    bot._client.socket.setKeepAlive(true, 0);
+                });
 
-            activeBots.push(botData);
-            updateClients(io);
+                const botData = {
+                    name: botName,
+                    status: 'Łączenie...',
+                    instance: bot,
+                    antiAfkInterval: null,
+                    ownerSocket: socket.id
+                };
 
-            bot.on('spawn', () => {
-                setTimeout(() => {
-                    botData.status = 'W grze';
+                activeBots.push(botData);
+                updateClients(io);
+
+                bot.on('spawn', () => {
+                    setTimeout(() => {
+                        botData.status = 'W grze';
+                        updateClients(io);
+
+                        if (antiAfk) {
+                            botData.antiAfkInterval = setInterval(() => {
+                                try {
+                                    bot.setControlState('jump', true);
+                                    setTimeout(() => bot.setControlState('jump', false), 400);
+                                } catch (e) {}
+                            }, 30000);
+                        }
+                    }, 3000);
+                });
+
+                bot.on('chat', (username, message) => {
+                    if (username === botName) return;
+                    io.emit('bot-log', { text: `<${username}> ${message}`, type: 'chat' });
+                });
+
+                bot.on('kicked', (reason) => {
+                    botData.status = 'Wyrzucony';
                     updateClients(io);
-                    io.emit('bot-log', { text: `[${botName}] Dolaczyl do serwera i ustabilizowal polaczenie!`, type: 'success' });
+                });
 
-                    if (antiAfk) {
-                        botData.antiAfkInterval = setInterval(() => {
-                            try {
-                                bot.setControlState('jump', true);
-                                setTimeout(() => bot.setControlState('jump', false), 400);
-                            } catch (e) {}
-                        }, 25000);
-                    }
-                }, 4000);
-            });
+                bot.on('error', (err) => {
+                    botData.status = 'Błąd';
+                    updateClients(io);
+                });
 
-            bot.on('chat', (username, message) => {
-                if (username === botName) return;
-                io.emit('bot-log', { text: `<${username}> ${message}`, type: 'chat' });
-            });
+                bot.on('end', (reason) => {
+                    if (botData.antiAfkInterval) clearInterval(botData.antiAfkInterval);
+                    botData.status = 'Rozłączony';
+                    updateClients(io);
+                });
 
-            bot.on('kicked', (reason) => {
-                botData.status = 'Wyrzucony';
-                updateClients(io);
-                let cleanReason = typeof reason === 'string' ? reason : JSON.stringify(reason);
-                io.emit('bot-log', { text: `[${botName}] Wyrzucony z serwera! Powod: ${cleanReason}`, type: 'error' });
-            });
-
-            bot.on('error', (err) => {
-                botData.status = 'Blad';
-                updateClients(io);
-                io.emit('bot-log', { text: `[${botName}] Blad mineflayer: ${err.message}`, type: 'error' });
-            });
-
-            bot.on('end', (reason) => {
-                if (botData.antiAfkInterval) clearInterval(botData.antiAfkInterval);
-                botData.status = 'Rozlaczony';
-                updateClients(io);
-                io.emit('bot-log', { text: `[${botName}] Rozlaczony. Powod: ${reason}`, type: 'error' });
-            });
-
-        } catch (err) {
-            io.emit('bot-log', { text: `[System] Blad tworzenia bota ${botName}: ${err.message}`, type: 'error' });
-        }
+            } catch (err) {
+                console.error(`Błąd tworzenia bota: ${err.message}`);
+            }
+        }, i * 800); // Każdy kolejny bot wchodzi 800 ms po poprzednim (np. bot 1 po 0s, bot 2 po 0.8s, bot 3 po 1.6s itd.)
     }
 }
 
