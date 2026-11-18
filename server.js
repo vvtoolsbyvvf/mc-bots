@@ -4,8 +4,13 @@ const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
 const dns = require('dns');
 
+// Globalne zabezpieczenie przed awarią procesu na Renderze
 process.on('uncaughtException', (err) => {
     console.error('Wychwycono krytyczny błąd procesów:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Wychwycono nieobsłużoną obietnicę:', reason);
 });
 
 const app = express();
@@ -45,7 +50,7 @@ io.on('connection', (socket) => {
                     io.emit('bot-log', { text: `[System] Wykryto port Aternosa: ${targetHost}:${targetPort}`, type: 'success' });
                     spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, socket, io);
                 } else {
-                    io.emit('bot-log', { text: `[System] Brak rekordu SRV, próbuję połączyć się bezpośrednio z ${targetHost}:25565`, type: 'info' });
+                    io.emit('bot-log', { text: `[System] Brak rekordu SRV, probuje polaczyc sie bezposrednio z ${targetHost}:25565`, type: 'info' });
                     spawnBotsBatch(targetHost, 25565, count, names, antiAfk, socket, io);
                 }
             });
@@ -75,8 +80,8 @@ io.on('connection', (socket) => {
 
 function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
     const maxBots = Math.min(parseInt(count, 10) || 1, 100);
-    console.log(`[BotManager] Kolejkowanie ${maxBots} botow dla ${host}:${port} z automatyczna wersja`);
-    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów (automatyczna wersja)...`, type: 'info' });
+    console.log(`[BotManager] Kolejkowanie ${maxBots} botow dla ${host}:${port}`);
+    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów...`, type: 'info' });
 
     const RANDOM_PREFIXES = ['Kacper', 'Bartek', 'Stasiek', 'Mat', 'Pro', 'Xx', 'Super', 'Hyper', 'Shadow', 'Craft', 'Builder'];
 
@@ -91,19 +96,18 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
             }
 
             try {
-                // Przywrócone automatyczne wykrywanie wersji (version: false) tak jak wczoraj
                 const bot = mineflayer.createBot({
                     host: host,
                     port: port,
                     username: botName,
-                    version: false, 
+                    version: false,
                     skipValidation: true,
-                    checkTimeoutInterval: 60000
+                    checkTimeoutInterval: 120000
                 });
 
                 const botData = {
                     name: botName,
-                    status: 'Łączenie...',
+                    status: 'Laczenie...',
                     instance: bot,
                     antiAfkInterval: null,
                     ownerSocket: socket.id
@@ -113,6 +117,11 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                 updateClients(io);
 
                 if (bot._client) {
+                    // Wymuszenie podtrzymania strumienia TCP i ignorowanie timeoutow ping
+                    try {
+                        bot._client.socket.setKeepAlive(true, 10000);
+                    } catch (e) {}
+
                     bot._client.on('resource_pack_send', (packet) => {
                         try {
                             bot._client.write('resource_pack_receive', {
@@ -122,17 +131,19 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                         } catch (e) {}
                     });
 
-                    bot._client.on('connect', () => {
-                        try { bot._client.socket.setKeepAlive(true, 0); } catch (e) {}
+                    bot._client.on('error', (err) => {
+                        botData.status = 'Blad TCP';
+                        updateClients(io);
+                        io.emit('bot-log', { text: `[${botName}] Blad TCP: ${err.message}`, type: 'error' });
                     });
                 }
 
                 bot.on('spawn', () => {
                     setTimeout(() => {
-                        if (botData.status === 'Łączenie...') {
+                        if (botData.status === 'Laczenie...') {
                             botData.status = 'W grze';
                             updateClients(io);
-                            io.emit('bot-log', { text: `[${botName}] Dołączył pomyślnie do serwera!`, type: 'success' });
+                            io.emit('bot-log', { text: `[${botName}] Dolaczyl pomyslnie do serwera!`, type: 'success' });
 
                             if (antiAfk) {
                                 botData.antiAfkInterval = setInterval(() => {
@@ -162,20 +173,20 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                 });
 
                 bot.on('error', (err) => {
-                    botData.status = 'Błąd';
+                    botData.status = 'Blad';
                     updateClients(io);
-                    io.emit('bot-log', { text: `[${botName}] Błąd sieciowy: ${err.message}`, type: 'error' });
+                    io.emit('bot-log', { text: `[${botName}] Blad sieciowy: ${err.message}`, type: 'error' });
                 });
 
                 bot.on('end', (reason) => {
                     if (botData.antiAfkInterval) clearInterval(botData.antiAfkInterval);
-                    botData.status = 'Rozłączony';
+                    botData.status = 'Rozlaczony';
                     updateClients(io);
-                    io.emit('bot-log', { text: `[${botName}] Rozłączony (${reason})`, type: 'error' });
+                    io.emit('bot-log', { text: `[${botName}] Rozlaczony (${reason})`, type: 'error' });
                 });
 
             } catch (err) {
-                console.error(`Błąd tworzenia bota: ${err.message}`);
+                console.error(`Blad tworzenia bota: ${err.message}`);
             }
         }, i * 1500);
     }
@@ -200,5 +211,5 @@ function updateClients(ioInstance) {
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`[Backend] Serwer ruszył na porcie ${PORT}`);
+    console.log(`[Backend] Serwer ruszyl na porcie ${PORT}`);
 });
