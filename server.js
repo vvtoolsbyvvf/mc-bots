@@ -31,37 +31,26 @@ io.on('connection', (socket) => {
         const botCount = parseInt(count) || 1;
         const botPrefix = prefix || 'Bot_';
 
-        console.log(`[BotManager] Start pętli dla ${botCount} botów -> ${host}:${targetPort}`);
-        socket.emit('log', `[System] Rozpoczynam wchodzenie ${botCount} botów z ochroną przed zwisaniem...`);
+        console.log(`[BotManager] Start bezpiecznej pętli sztywnej dla ${botCount} botów -> ${host}:${targetPort}`);
+        socket.emit('log', `[System] Rozpoczynam odpalanie ${botCount} botów ze sztywną przerwą 12s między każdym...`);
 
-        let index = 0;
+        // Sztywna pętla z odstępem 12 sekund na każdego bota (całkowicie niezależna od błędów)
+        for (let i = 0; i < botCount; i++) {
+            const delay = i * 12000; // 12 sekund przerwy pomnożone przez indeks bota
+            
+            setTimeout(() => {
+                const username = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
+                console.log(`[BotManager] Odpalam bota #${i + 1}/${botCount}: ${username}`);
+                socket.emit('log', `[System] Start bota #${i + 1} (${username})...`);
 
-        function launchNextBot() {
-            if (index >= botCount) {
-                console.log(`[BotManager] Kolejka zakończona.`);
-                socket.emit('log', `[System] Wszystkie boty z kolejki zostały przetworzone.`);
-                return;
-            }
-
-            const username = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
-            console.log(`[BotManager] Odpalam bota #${index + 1}: ${username}`);
-
-            createBot(socket, {
-                host: host.trim(),
-                port: targetPort,
-                username,
-                version: version && version !== 'auto' ? version : false
-            }, () => {
-                index++;
-                if (index < botCount) {
-                    console.log(`[BotManager] Czekam 10 sekund przed kolejnym botem...`);
-                    socket.emit('log', `[System] Odczekuję 10 sekund przed następnym botem...`);
-                    setTimeout(launchNextBot, 10000);
-                }
-            });
+                createBot(socket, {
+                    host: host.trim(),
+                    port: targetPort,
+                    username,
+                    version: version && version !== 'auto' ? version : false
+                });
+            }, delay);
         }
-
-        launchNextBot();
     });
 
     socket.on('stop-bots', () => {
@@ -90,19 +79,11 @@ io.on('connection', (socket) => {
     });
 });
 
-function createBot(socket, options, onFinished) {
+function createBot(socket, options) {
     socket.emit('log', `[${options.username}] Łączenie z ${options.host}:${options.port}...`);
     console.log(`[Bot] Tworzenie instancji ${options.username} -> ${options.host}:${options.port}`);
 
     let bot;
-    let finishedCalled = false;
-
-    function finish() {
-        if (!finishedCalled) {
-            finishedCalled = true;
-            if (onFinished) onFinished();
-        }
-    }
 
     try {
         bot = mineflayer.createBot({
@@ -117,26 +98,24 @@ function createBot(socket, options, onFinished) {
     } catch (err) {
         console.error(`[Bot Error Init] ${options.username}:`, err.message);
         socket.emit('log', `[${options.username}] Błąd inicjalizacji: ${err.message}`);
-        finish();
         return;
     }
 
     bots.set(options.username, bot);
 
-    // Awaryjny timeout: jeśli bot utknie w stanie łączenia na 10 sekund, zwalniamy kolejkę
+    // Awaryjny timeout: jeśli bot utknie w stanie łączenia na 15 sekund, wyłączamy go
     const safetyTimer = setTimeout(() => {
-        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia (brak spawna). Zwalniam kolejkę.`);
+        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia (brak spawna). Rozłączam.`);
         try { bot.quit(); } catch(e) {}
         bots.delete(options.username);
-        finish();
-    }, 10000);
+        socket.emit('bot-count', bots.size);
+    }, 15000);
 
     bot.once('spawn', () => {
         clearTimeout(safetyTimer);
         console.log(`[Bot] ${options.username} wszedl na serwer!`);
         socket.emit('log', `[${options.username}] ✅ Połączono i zespawnowano na serwerze!`);
         socket.emit('bot-count', bots.size);
-        finish();
     });
 
     bot.on('login', () => {
@@ -161,7 +140,6 @@ function createBot(socket, options, onFinished) {
         socket.emit('log', `[${options.username}] ❌ Wyrzucony przez serwer: ${parsedReason}`);
         bots.delete(options.username);
         socket.emit('bot-count', bots.size);
-        finish();
     });
 
     bot.on('error', (err) => {
@@ -170,7 +148,6 @@ function createBot(socket, options, onFinished) {
         socket.emit('log', `[${options.username}] ⚠️ Błąd połączenia: ${err.message}`);
         bots.delete(options.username);
         socket.emit('bot-count', bots.size);
-        finish();
     });
 
     bot.on('end', (reason) => {
@@ -179,7 +156,6 @@ function createBot(socket, options, onFinished) {
         socket.emit('log', `[${options.username}] Rozłączono (${reason || 'koniec sesji'}).`);
         bots.delete(options.username);
         socket.emit('bot-count', bots.size);
-        finish();
     });
 }
 
