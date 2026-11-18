@@ -4,15 +4,20 @@ const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
 const cors = require('cors');
 
+// Zabezpieczenie przed crashem całego procesu Node.js na Railway
 process.on('uncaughtException', (err) => {
     console.error('[CRASH GUARD]', err.message);
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('[CRASH GUARD PROMISE]', reason);
 });
 
 const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-    res.send('BotManager Stable Backend Online');
+    res.send('BotManager Final Stable Backend Online');
 });
 
 const server = http.createServer(app);
@@ -27,6 +32,7 @@ const activeBots = new Map();
 let botQueue = [];
 let isSpawning = false;
 
+// Bezpieczna globalna kolejka z przerwą antyspamową dla Aternosa
 function processQueue(socket) {
     if (isSpawning || botQueue.length === 0) return;
 
@@ -36,7 +42,7 @@ function processQueue(socket) {
     socket.emit('log', `[System] Wypuszczam bota: ${botData.username} (w kolejce: ${botQueue.length})`);
 
     createSafeBot(socket, botData, () => {
-        // 18 sekund przerwy – bezpieczny bufor dla zapory Aternosa
+        // 18 sekund przerwy między botami, żeby Aternos nie zablokował IP
         setTimeout(() => {
             isSpawning = false;
             processQueue(socket);
@@ -45,24 +51,25 @@ function processQueue(socket) {
 }
 
 io.on('connection', (socket) => {
-    console.log(`[Backend] Klient połączony: ${socket.id}`);
+    console.log(`[Backend] Klient połączony z vvTools: ${socket.id}`);
 
     socket.on('start-bots', (data) => {
         try {
-            // Obsługujemy różne warianty kluczy przesyłanych z vvTools (host / address)
             const rawHost = data.host || data.address || data.ip;
             const targetPort = parseInt(data.port) || 11670;
             const botCount = parseInt(data.count) || 1;
             const botPrefix = data.prefix || 'Bot_';
-            const version = data.version && data.version !== 'auto' ? data.version : false;
+            
+            // SZTYWNIE WYMUSZONA WERSJA DLA ATERNOSA 1.21.11
+            const version = '1.21.11';
 
             if (!rawHost) {
-                socket.emit('log', `[System] ❌ Błąd: Nie podano adresu serwera!`);
+                socket.emit('log', `[System] ❌ Błąd: Brak adresu serwera!`);
                 return;
             }
 
             const cleanHost = String(rawHost).trim();
-            socket.emit('log', `[System] Zlecenie: ${botCount} botów -> ${cleanHost}:${targetPort}`);
+            socket.emit('log', `[System] Zlecenie: ${botCount} botów -> ${cleanHost}:${targetPort} (Wersja: ${version})`);
 
             botQueue = [];
             for (let i = 0; i < botCount; i++) {
@@ -80,7 +87,7 @@ io.on('connection', (socket) => {
             }
         } catch (err) {
             console.error('[Start Error]', err.message);
-            socket.emit('log', `[System] Błąd krytyczny: ${err.message}`);
+            socket.emit('log', `[System] Błąd krytyczny startu: ${err.message}`);
         }
     });
 
@@ -91,7 +98,7 @@ io.on('connection', (socket) => {
             try { bot.quit(); } catch (e) {}
         });
         activeBots.clear();
-        socket.emit('log', `[System] Zatrzymano wszystkie boty.`);
+        socket.emit('log', `[System] Zatrzymano wszystkie boty i wyczyszczono kolejkę.`);
         socket.emit('bot-count', 0);
     });
 
@@ -108,7 +115,7 @@ io.on('connection', (socket) => {
 });
 
 function createSafeBot(socket, options, onDone) {
-    socket.emit('log', `[${options.username}] Łączenie z ${options.host}:${options.port}...`);
+    socket.emit('log', `[${options.username}] Łączenie z ${options.host}:${options.port} (${options.version})...`);
     
     let bot;
     let finished = false;
@@ -141,7 +148,6 @@ function createSafeBot(socket, options, onDone) {
     const connectionTimeout = setTimeout(() => {
         socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia. Zwalniam kolejkę.`);
         try { bot.quit(); } catch(e) {}
-        activeBots.activeBots?.delete?.(options.username);
         activeBots.delete(options.username);
         socket.emit('bot-count', activeBots.size);
         finishTask();
