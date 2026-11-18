@@ -4,11 +4,20 @@ const { Server } = require('socket.io');
 const net = require('net');
 const cors = require('cors');
 
+// Zabezpieczenie przed crashem całego procesu Node.js
+process.on('uncaughtException', (err) => {
+    console.error('[CRASH GUARD] Wyłapano nieobsłużony błąd:', err.message);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRASH GUARD] Wyłapano odrzuconą obietnicę:', reason);
+});
+
 const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-    res.send('BotManager Raw TCP Mode Online');
+    res.send('BotManager Safe TCP Online');
 });
 
 const server = http.createServer(app);
@@ -24,48 +33,64 @@ let activeConnections = new Set();
 io.on('connection', (socket) => {
     console.log(`[Backend] Nowy klient z panela vvTools: ${socket.id}`);
 
-    // Tryb testu surowych socketów TCP (omija całkowicie anty-bota Mineflayera)
     socket.on('start-bots', (data) => {
-        const { host, port, count, prefix } = data;
-        const targetPort = parseInt(port) || 11670;
-        const botCount = parseInt(count) || 1;
-        const botPrefix = prefix || 'Bot_';
+        try {
+            const { host, port, count, prefix } = data;
+            const targetPort = parseInt(port) || 11670;
+            const botCount = parseInt(count) || 1;
+            const botPrefix = prefix || 'Bot_';
 
-        console.log(`[TCP Test] Próba otwarcia ${botCount} surowych socketów TCP do ${host}:${targetPort}`);
-        socket.emit('log', `[System] Tryb Raw TCP: Testuję połączenia do ${host}:${targetPort}...`);
+        console.log(`[TCP Test] Bezpieczny start ${botCount} socketów do ${host}:${targetPort}`);
+            socket.emit('log', `[System] Bezpieczny tryb TCP: Testuję połączenia do ${host}:${targetPort}...`);
 
-        let launched = 0;
+            let launched = 0;
 
-        function connectNext() {
-            if (launched >= botCount) return;
+            function connectNext() {
+                if (launched >= botCount) return;
 
-            const botName = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
-            socket.emit('log', `[${botName}] Otwieram surowy socket TCP...`);
+                const botName = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
+                socket.emit('log', `[${botName}] Próba nawiązania TCP...`);
 
-            const client = new net.Socket();
-            
-            client.connect(targetPort, host.trim(), () => {
-                socket.emit('log', `[${botName}] ✅ Sukces! Surowy socket TCP połączył się z Aternosem!`);
-                activeConnections.add(client);
-                socket.emit('bot-count', activeConnections.size);
-            });
+                try {
+                    const client = new net.Socket();
+                    
+                    client.setTimeout(10000); // 10 sekund timeoutu na socket
 
-            client.on('error', (err) => {
-                socket.emit('log', `[${botName}] ❌ Błąd TCP / zablokowany: ${err.message}`);
-                client.destroy();
-            });
+                    client.connect(targetPort, host.trim(), () => {
+                        socket.emit('log', `[${botName}] ✅ TCP połączone z Aternosem!`);
+                        activeConnections.add(client);
+                        socket.emit('bot-count', activeConnections.size);
+                    });
 
-            client.on('close', () => {
-                activeConnections.delete(client);
-                socket.emit('bot-count', activeConnections.size);
-            });
+                    client.on('timeout', () => {
+                        socket.emit('log', `[${botName}] ⚠️ Timeout TCP.`);
+                        try { client.destroy(); } catch(e) {}
+                    });
 
-            launched++;
-            // Odstęp 3 sekundy między surowymi socketami
-            setTimeout(connectNext, 3000);
+                    client.on('error', (err) => {
+                        socket.emit('log', `[${botName}] ❌ Błąd TCP: ${err.message}`);
+                        try { client.destroy(); } catch(e) {}
+                    });
+
+                    client.on('close', () => {
+                        activeConnections.delete(client);
+                        try { socket.emit('bot-count', activeConnections.size); } catch(e) {}
+                    });
+
+                } catch (e) {
+                    console.error('[Socket Error]', e.message);
+                }
+
+                launched++;
+                setTimeout(connectNext, 3000);
+            }
+
+            connectNext();
+
+        } catch (err) {
+            console.error('[Start-Bots Error]', err.message);
+            socket.emit('log', `[System] Błąd krytyczny procedury: ${err.message}`);
         }
-
-        connectNext();
     });
 
     socket.on('stop-bots', () => {
@@ -74,8 +99,10 @@ io.on('connection', (socket) => {
             try { client.destroy(); } catch(e) {}
         });
         activeConnections.clear();
-        socket.emit('log', `[System] Zamknięto wszystkie sockety TCP.`);
-        socket.emit('bot-count', 0);
+        try {
+            socket.emit('log', `[System] Zamknięto wszystkie sockety TCP.`);
+            socket.emit('bot-count', 0);
+        } catch(e) {}
     });
 
     socket.on('disconnect', () => {
