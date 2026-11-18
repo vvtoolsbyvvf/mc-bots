@@ -23,7 +23,7 @@ io.on('connection', (socket) => {
     updateClients(io);
 
     socket.on('start-bots', (data) => {
-        const { ip, count, names, antiAfk, version } = data;
+        const { ip, count, names, antiAfk } = data;
         if (!ip) return;
 
         let cleanInput = ip.trim();
@@ -34,7 +34,7 @@ io.on('connection', (socket) => {
             const parts = cleanInput.split(':');
             targetHost = parts[0];
             targetPort = parseInt(parts[1], 10) || 25565;
-            spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, version, socket, io);
+            spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, socket, io);
         } else {
             io.emit('bot-log', { text: `[System] Pobieranie danych DNS dla ${targetHost}...`, type: 'info' });
             
@@ -43,10 +43,10 @@ io.on('connection', (socket) => {
                     targetHost = addresses[0].name;
                     targetPort = addresses[0].port;
                     io.emit('bot-log', { text: `[System] Wykryto port Aternosa: ${targetHost}:${targetPort}`, type: 'success' });
-                    spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, version, socket, io);
+                    spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, socket, io);
                 } else {
                     io.emit('bot-log', { text: `[System] Brak rekordu SRV, próbuję połączyć się bezpośrednio z ${targetHost}:25565`, type: 'info' });
-                    spawnBotsBatch(targetHost, 25565, count, names, antiAfk, version, socket, io);
+                    spawnBotsBatch(targetHost, 25565, count, names, antiAfk, socket, io);
                 }
             });
         }
@@ -73,10 +73,10 @@ io.on('connection', (socket) => {
     });
 });
 
-function spawnBotsBatch(host, port, count, names, antiAfk, version, socket, io) {
+function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
     const maxBots = Math.min(parseInt(count, 10) || 1, 100);
-    console.log(`[BotManager] Kolejkowanie ${maxBots} botow dla ${host}:${port} (Wersja: ${version})`);
-    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów (Wersja: ${version})...`, type: 'info' });
+    console.log(`[BotManager] Kolejkowanie ${maxBots} botow dla ${host}:${port} z automatyczna wersja`);
+    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów (automatyczna wersja)...`, type: 'info' });
 
     const RANDOM_PREFIXES = ['Kacper', 'Bartek', 'Stasiek', 'Mat', 'Pro', 'Xx', 'Super', 'Hyper', 'Shadow', 'Craft', 'Builder'];
 
@@ -91,12 +91,12 @@ function spawnBotsBatch(host, port, count, names, antiAfk, version, socket, io) 
             }
 
             try {
-                // Jawna wersja pomija zablokowany przez Aternos ping na Renderze
+                // Przywrócone automatyczne wykrywanie wersji (version: false) tak jak wczoraj
                 const bot = mineflayer.createBot({
                     host: host,
                     port: port,
                     username: botName,
-                    version: version || '1.20.4', 
+                    version: false, 
                     skipValidation: true,
                     checkTimeoutInterval: 60000
                 });
