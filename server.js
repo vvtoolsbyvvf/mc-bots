@@ -4,6 +4,15 @@ const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
 const dns = require('dns');
 
+// ZABEZPIECZENIE: Zapobiega wyłączeniu serwera przez cokolwiek
+process.on('uncaughtException', (err) => {
+    console.error('Wychwycono krytyczny błąd procesów (zapobiegno awarii):', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Wychwycono nieobsłużoną obietnicę:', reason);
+});
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -48,7 +57,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Obsługa komendy wysłanej przez użytkownika do konkretnego bota
     socket.on('bot-command', (data) => {
         const { botName, message } = data;
         if (!botName || !message) return;
@@ -73,12 +81,11 @@ io.on('connection', (socket) => {
 function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
     const maxBots = Math.min(parseInt(count, 10) || 1, 100);
     console.log(`[BotManager] Kolejkowanie ${maxBots} botow dla ${host}:${port}`);
-    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów (stabilne wchodzenie paczkami)...`, type: 'info' });
+    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów...`, type: 'info' });
 
     const RANDOM_PREFIXES = ['Kacper', 'Bartek', 'Stasiek', 'Mat', 'Pro', 'Xx', 'Super', 'Hyper', 'Shadow', 'Craft', 'Builder'];
 
     for (let i = 0; i < maxBots; i++) {
-        // Opóźnienie 1200ms na bota, paczkowane, żeby Aternos nie blokował połączeń (rate limit / connection throttled)
         setTimeout(() => {
             if (socket.disconnected && activeBots.length === 0) return;
 
@@ -98,16 +105,24 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                     checkTimeoutInterval: 120000
                 });
 
-                bot._client.on('resource_pack_send', (packet) => {
-                    bot._client.write('resource_pack_receive', {
-                        uuid: packet.uuid,
-                        result: 3
+                if (bot._client) {
+                    bot._client.on('resource_pack_send', (packet) => {
+                        try {
+                            bot._client.write('resource_pack_receive', {
+                                uuid: packet.uuid,
+                                result: 3
+                            });
+                        } catch (e) {}
                     });
-                });
 
-                bot._client.on('connect', () => {
-                    bot._client.socket.setKeepAlive(true, 0);
-                });
+                    bot._client.on('connect', () => {
+                        try { bot._client.socket.setKeepAlive(true, 0); } catch (e) {}
+                    });
+
+                    bot._client.on('error', (err) => {
+                        io.emit('bot-log', { text: `[${botName}] Błąd klienta TCP: ${err.message}`, type: 'error' });
+                    });
+                }
 
                 const botData = {
                     name: botName,
@@ -137,7 +152,6 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                     }, 3000);
                 });
 
-                // Przekazywanie czatu serwera przypisanego TYLKO do tego bota
                 bot.on('chat', (username, message) => {
                     if (username === botName) return;
                     io.emit('bot-chat-message', {
