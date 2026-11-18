@@ -7,7 +7,6 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Endpoint healthcheck dla Railway
 app.get('/', (req, res) => {
     res.send('BotManager Backend Online');
 });
@@ -20,32 +19,32 @@ const io = new Server(server, {
     }
 });
 
-const bots = new Map();
+const activeBots = new Map();
+let botQueue = [];
+let queueTimer = null;
+let isSpawning = false;
 
-// GLOBALNA KOLEJKA – chroni przed spamem z frontendu vvTools i banem IP na Aternosie
-let globalQueue = [];
-let isProcessingQueue = false;
+// Pancerna funkcja przetwarzająca kolejkę po jednym bocie
+function processQueue(socket) {
+    if (isSpawning || botQueue.length === 0) return;
 
-function processGlobalQueue(socket) {
-    if (isProcessingQueue || globalQueue.length === 0) return;
+    isSpawning = true;
+    const botData = botQueue.shift();
 
-    isProcessingQueue = true;
-    const task = globalQueue.shift();
+    console.log(`[Queue] Pobieram z kolejki. Zostało do wpuszczenia: ${botQueue.length}`);
+    socket.emit('log', `[System] Wypuszczam bota: ${botData.username} (w kolejce: ${botQueue.length})`);
 
-    console.log(`[Queue] Odpalam bota z kolejki: ${task.username} (pozostało w kolejce: ${globalQueue.length})`);
-    socket.emit('log', `[System] Start bota ${task.username} (w kolejce: ${globalQueue.length})...`);
-
-    createBot(socket, task, () => {
-        // Czekamy sztywne 15 sekund przed wyciągnięciem kolejnego bota z kolejki (Aternos anti-throttle)
+    createSafeBot(socket, botData, () => {
+        // Czekamy sztywne 18 sekund ZANIM zwolnimy blokadę dla kolejnego bota
         setTimeout(() => {
-            isProcessingQueue = false;
-            processGlobalQueue(socket);
-        }, 15000);
+            isSpawning = false;
+            processQueue(socket);
+        }, 18000); // 18 sekund bufora dla Aternosa
     });
 }
 
 io.on('connection', (socket) => {
-    console.log(`[Backend] Nowy klient polaczony z panelem vvTools: ${socket.id}`);
+    console.log(`[Backend] Nowy klient z panela vvTools: ${socket.id}`);
 
     socket.on('start-bots', (data) => {
         const { host, port, count, prefix, version } = data;
@@ -53,13 +52,15 @@ io.on('connection', (socket) => {
         const botCount = parseInt(count) || 1;
         const botPrefix = prefix || 'Bot_';
 
-        console.log(`[BotManager] Otrzymano zlecenie na ${botCount} botów dla ${host}:${targetPort}`);
-        socket.emit('log', `[System] Dodaję ${botCount} botów do globalnej kolejki...`);
+        console.log(`[BotManager] Zlecenie na ${botCount} botów -> ${host}:${targetPort}`);
+        socket.emit('log', `[System] Przyjęto zlecenie na ${botCount} botów. Dodaję do bezpiecznej kolejki...`);
 
-        // Dodajemy zadania do globalnej tablicy
+        // Czyszczymy starą kolejkę przed nowym zleceniem
+        botQueue = [];
+
         for (let i = 0; i < botCount; i++) {
             const username = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
-            globalQueue.push({
+            botQueue.push({
                 host: host.trim(),
                 port: targetPort,
                 username,
@@ -67,50 +68,48 @@ io.on('connection', (socket) => {
             });
         }
 
-        // Uruchamiamy przetwarzanie kolejki, jeśli stoi
-        processGlobalQueue(socket);
+        // Startujemy procesor kolejki, jeśli nie działa
+        if (!isSpawning) {
+            processQueue(socket);
+        }
     });
 
     socket.on('stop-bots', () => {
-        console.log(`[BotManager] Zatrzymywanie wszystkich botow (${bots.size}) oraz czyszczenie kolejki`);
-        globalQueue = []; // Czyścimy kolejkę
-        isProcessingQueue = false;
-        
-        bots.forEach((bot, name) => {
-            try {
-                bot.quit();
-            } catch (e) {}
-            bots.delete(name);
+        console.log(`[BotManager] Awaryjne zatrzymywanie wszystkich botów.`);
+        botQueue = [];
+        isSpawning = false;
+
+        activeBots.forEach((bot, name) => {
+            try { bot.quit(); } catch (e) {}
+            activeBots.delete(name);
         });
-        socket.emit('log', `[System] Zatrzymano boty i wyczyszczono kolejkę.`);
+
+        socket.emit('log', `[System] Zatrzymano wszystkie boty i wyczyszczono kolejkę.`);
         socket.emit('bot-count', 0);
     });
 
     socket.on('send-chat', (message) => {
-        bots.forEach((bot) => {
-            if (bot && bot.player) {
-                bot.chat(message);
-            }
+        activeBots.forEach((bot) => {
+            if (bot && bot.player) bot.chat(message);
         });
         socket.emit('log', `[Czat] Wysłano: ${message}`);
     });
 
     socket.on('disconnect', () => {
-        console.log(`[Backend] Klient rozlaczony: ${socket.id}`);
+        console.log(`[Backend] Klient rozłączony: ${socket.id}`);
     });
 });
 
-function createBot(socket, options, onFinished) {
-    socket.emit('log', `[${options.username}] Łączenie z ${options.host}:${options.port}...`);
-    console.log(`[Bot] Tworzenie instancji ${options.username} -> ${options.host}:${options.port}`);
-
+function createSafeBot(socket, options, onDone) {
+    socket.emit('log', `[${options.username}] Łączenie z TCP ${options.host}:${options.port}...`);
+    
     let bot;
-    let finishedCalled = false;
+    let finished = false;
 
-    function finish() {
-        if (!finishedCalled) {
-            finishedCalled = true;
-            if (onFinished) onFinished();
+    function finishTask() {
+        if (!finished) {
+            finished = true;
+            if (onDone) onDone();
         }
     }
 
@@ -122,75 +121,59 @@ function createBot(socket, options, onFinished) {
             version: options.version,
             auth: 'offline',
             hideErrors: false,
-            checkTimeoutInterval: 30000
+            checkTimeoutInterval: 45000
         });
     } catch (err) {
-        console.error(`[Bot Error Init] ${options.username}:`, err.message);
-        socket.emit('log', `[${options.username}] Błąd inicjalizacji: ${err.message}`);
-        finish();
+        socket.emit('log', `[${options.username}] Błąd krytyczny init: ${err.message}`);
+        finishTask();
         return;
     }
 
-    bots.set(options.username, bot);
+    activeBots.set(options.username, bot);
 
-    // Awaryjny timeout: zwalnia kolejkę po 15 sekundach w razie zwisu
-    const safetyTimer = setTimeout(() => {
-        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia. Zwalniam kolejkę.`);
+    // Zabezpieczenie czasowe: jeśli bot nie wejdzie w 15 sekund, zwalniamy kolejkę, żeby nie zablokować innych
+    const connectionTimeout = setTimeout(() => {
+        socket.emit('log', `[${options.username}] ⚠️ Timeout TCP/Spawn. Zwalniam kolejkę dla kolejnego bota.`);
         try { bot.quit(); } catch(e) {}
-        bots.delete(options.username);
-        socket.emit('bot-count', bots.size);
-        finish();
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
+        finishTask();
     }, 15000);
 
     bot.once('spawn', () => {
-        clearTimeout(safetyTimer);
-        console.log(`[Bot] ${options.username} wszedl na serwer!`);
-        socket.emit('log', `[${options.username}] ✅ Połączono i zespawnowano na serwerze!`);
-        socket.emit('bot-count', bots.size);
-        finish();
-    });
-
-    bot.on('login', () => {
-        socket.emit('log', `[${options.username}] Zalogowano do protokołu TCP, czekam na spawn...`);
-    });
-
-    bot.on('messagestr', (message) => {
-        if (message.trim().length > 0) {
-            socket.emit('log', `[Serwer -> ${options.username}] ${message}`);
-        }
+        clearTimeout(connectionTimeout);
+        socket.emit('log', `[${options.username}] ✅ Sukces! Zespawnowany na serwerie.`);
+        socket.emit('bot-count', activeBots.size);
+        // Ważne: dajemy chwilę stabilizacji i zwalniamy kolejkę
+        setTimeout(finishTask, 2000);
     });
 
     bot.on('kicked', (reason) => {
-        clearTimeout(safetyTimer);
+        clearTimeout(connectionTimeout);
         let parsedReason = reason;
         try {
             const obj = JSON.parse(reason);
             parsedReason = obj.text || JSON.stringify(obj);
         } catch (e) {}
-        
-        console.log(`[Bot Kicked] ${options.username}: ${parsedReason}`);
-        socket.emit('log', `[${options.username}] ❌ Wyrzucony przez serwer: ${parsedReason}`);
-        bots.delete(options.username);
-        socket.emit('bot-count', bots.size);
-        finish();
+
+        socket.emit('log', `[${options.username}] ❌ Wyrzucony: ${parsedReason}`);
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
+        finishTask();
     });
 
     bot.on('error', (err) => {
-        clearTimeout(safetyTimer);
-        console.error(`[Bot Error] ${options.username}:`, err.message);
-        socket.emit('log', `[${options.username}] ⚠️ Błąd połączenia: ${err.message}`);
-        bots.delete(options.username);
-        socket.emit('bot-count', bots.size);
-        finish();
+        clearTimeout(connectionTimeout);
+        socket.emit('log', `[${options.username}] ⚠️ Błąd sieciowy: ${err.message}`);
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
+        finishTask();
     });
 
     bot.on('end', (reason) => {
-        clearTimeout(safetyTimer);
-        console.log(`[Bot End] ${options.username}: ${reason}`);
-        socket.emit('log', `[${options.username}] Rozłączono (${reason || 'koniec sesji'}).`);
-        bots.delete(options.username);
-        socket.emit('bot-count', bots.size);
-        finish();
+        clearTimeout(connectionTimeout);
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
     });
 }
 
