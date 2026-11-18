@@ -4,20 +4,20 @@ const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
 const cors = require('cors');
 
-// Zabezpieczenie przed crashem całego procesu Node.js na Railway
+// Bezwzględna ochrona przed jakimkolwiek crashem procesu
 process.on('uncaughtException', (err) => {
-    console.error('[CRASH GUARD]', err.message);
+    console.error('[CRASH GUARD] Ignorowany błąd krytyczny:', err.message);
 });
 
 process.on('unhandledRejection', (reason) => {
-    console.error('[CRASH GUARD PROMISE]', reason);
+    console.error('[CRASH GUARD] Ignorowane odrzucenie:', reason);
 });
 
 const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-    res.send('BotManager Final Stable Backend Online');
+    res.send('BotManager Ultra Stable Online');
 });
 
 const server = http.createServer(app);
@@ -32,26 +32,26 @@ const activeBots = new Map();
 let botQueue = [];
 let isSpawning = false;
 
-// Bezpieczna globalna kolejka z przerwą antyspamową dla Aternosa
 function processQueue(socket) {
     if (isSpawning || botQueue.length === 0) return;
 
     isSpawning = true;
     const botData = botQueue.shift();
 
-    socket.emit('log', `[System] Wypuszczam bota: ${botData.username} (w kolejce: ${botQueue.length})`);
+    try {
+        socket.emit('log', `[System] Wypuszczam bota: ${botData.username} (w kolejce: ${botQueue.length})`);
+    } catch(e) {}
 
     createSafeBot(socket, botData, () => {
-        // 18 sekund przerwy między botami, żeby Aternos nie zablokował IP
         setTimeout(() => {
             isSpawning = false;
             processQueue(socket);
-        }, 18000);
+        }, 15000); // 15 sekund przerwy
     });
 }
 
 io.on('connection', (socket) => {
-    console.log(`[Backend] Klient połączony z vvTools: ${socket.id}`);
+    console.log(`[Backend] Klient połączony: ${socket.id}`);
 
     socket.on('start-bots', (data) => {
         try {
@@ -60,8 +60,8 @@ io.on('connection', (socket) => {
             const botCount = parseInt(data.count) || 1;
             const botPrefix = data.prefix || 'Bot_';
             
-            // SZTYWNIE WYMUSZONA WERSJA DLA ATERNOSA 1.21.11
-            const version = '1.21.11';
+            // Pobieramy wersję z panelu lub domyślnie dajemy false (auto-detekcja) żeby Mineflayer sam dopasował protokół
+            const clientVersion = data.version && data.version !== 'auto' ? data.version : false;
 
             if (!rawHost) {
                 socket.emit('log', `[System] ❌ Błąd: Brak adresu serwera!`);
@@ -69,7 +69,7 @@ io.on('connection', (socket) => {
             }
 
             const cleanHost = String(rawHost).trim();
-            socket.emit('log', `[System] Zlecenie: ${botCount} botów -> ${cleanHost}:${targetPort} (Wersja: ${version})`);
+            socket.emit('log', `[System] Zlecenie: ${botCount} botów -> ${cleanHost}:${targetPort}`);
 
             botQueue = [];
             for (let i = 0; i < botCount; i++) {
@@ -78,7 +78,7 @@ io.on('connection', (socket) => {
                     host: cleanHost,
                     port: targetPort,
                     username,
-                    version
+                    version: clientVersion
                 });
             }
 
@@ -87,7 +87,7 @@ io.on('connection', (socket) => {
             }
         } catch (err) {
             console.error('[Start Error]', err.message);
-            socket.emit('log', `[System] Błąd krytyczny startu: ${err.message}`);
+            socket.emit('log', `[System] Błąd startu: ${err.message}`);
         }
     });
 
@@ -98,15 +98,10 @@ io.on('connection', (socket) => {
             try { bot.quit(); } catch (e) {}
         });
         activeBots.clear();
-        socket.emit('log', `[System] Zatrzymano wszystkie boty i wyczyszczono kolejkę.`);
-        socket.emit('bot-count', 0);
-    });
-
-    socket.on('send-chat', (message) => {
-        activeBots.forEach((bot) => {
-            if (bot && bot.player) bot.chat(message);
-        });
-        socket.emit('log', `[Czat] Wysłano: ${message}`);
+        try {
+            socket.emit('log', `[System] Zatrzymano wszystkie boty.`);
+            socket.emit('bot-count', 0);
+        } catch(e) {}
     });
 
     socket.on('disconnect', () => {
@@ -115,8 +110,6 @@ io.on('connection', (socket) => {
 });
 
 function createSafeBot(socket, options, onDone) {
-    socket.emit('log', `[${options.username}] Łączenie z ${options.host}:${options.port} (${options.version})...`);
-    
     let bot;
     let finished = false;
 
@@ -128,64 +121,72 @@ function createSafeBot(socket, options, onDone) {
     }
 
     try {
+        socket.emit('log', `[${options.username}] Tworzenie instancji...`);
+        
         bot = mineflayer.createBot({
             host: options.host,
             port: options.port,
             username: options.username,
-            version: options.version,
+            version: options.version, // Jeśli wywoła błąd wersji, zostanie przechwycony
             auth: 'offline',
-            hideErrors: false,
-            checkTimeoutInterval: 45000
+            hideErrors: true,
+            checkTimeoutInterval: 30000
         });
     } catch (err) {
-        socket.emit('log', `[${options.username}] Błąd inicjalizacji: ${err.message}`);
+        socket.emit('log', `[${options.username}] Błąd init: ${err.message}`);
         finishTask();
         return;
     }
 
     activeBots.set(options.username, bot);
 
-    const connectionTimeout = setTimeout(() => {
-        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia. Zwalniam kolejkę.`);
+    const safetyTimer = setTimeout(() => {
+        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia.`);
         try { bot.quit(); } catch(e) {}
         activeBots.delete(options.username);
-        socket.emit('bot-count', activeBots.size);
+        try { socket.emit('bot-count', activeBots.size); } catch(e) {}
         finishTask();
     }, 20000);
 
     bot.once('spawn', () => {
-        clearTimeout(connectionTimeout);
-        socket.emit('log', `[${options.username}] ✅ Zespawnowany na serwerze!`);
-        socket.emit('bot-count', activeBots.size);
+        clearTimeout(safetyTimer);
+        try {
+            socket.emit('log', `[${options.username}] ✅ Bot wbił na serwer!`);
+            socket.emit('bot-count', activeBots.size);
+        } catch(e) {}
         setTimeout(finishTask, 2000);
     });
 
     bot.on('kicked', (reason) => {
-        clearTimeout(connectionTimeout);
-        let parsedReason = reason;
+        clearTimeout(safetyTimer);
+        let parsed = reason;
         try {
             const obj = JSON.parse(reason);
-            parsedReason = obj.text || JSON.stringify(obj);
+            parsed = obj.text || JSON.stringify(obj);
         } catch (e) {}
 
-        socket.emit('log', `[${options.username}] ❌ Wyrzucony: ${parsedReason}`);
+        try {
+            socket.emit('log', `[${options.username}] ❌ Wyrzucony: ${parsed}`);
+            socket.emit('bot-count', activeBots.size);
+        } catch(e) {}
         activeBots.delete(options.username);
-        socket.emit('bot-count', activeBots.size);
         finishTask();
     });
 
     bot.on('error', (err) => {
-        clearTimeout(connectionTimeout);
-        socket.emit('log', `[${options.username}] ⚠️ Błąd sieciowy: ${err.message}`);
+        clearTimeout(safetyTimer);
+        try {
+            socket.emit('log', `[${options.username}] ⚠️ Błąd bota: ${err.message}`);
+            socket.emit('bot-count', activeBots.size);
+        } catch(e) {}
         activeBots.delete(options.username);
-        socket.emit('bot-count', activeBots.size);
         finishTask();
     });
 
     bot.on('end', () => {
-        clearTimeout(connectionTimeout);
+        clearTimeout(safetyTimer);
         activeBots.delete(options.username);
-        socket.emit('bot-count', activeBots.size);
+        try { socket.emit('bot-count', activeBots.size); } catch(e) {}
     });
 }
 
