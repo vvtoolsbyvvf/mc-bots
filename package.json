@@ -1,7 +1,6 @@
 {
   "name": "mc-bots-backend",
   "version": "1.0.0",
-  "description": "Backend dla botow Minecraft z Mineflayer i Socket.io",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
