@@ -23,7 +23,7 @@ io.on('connection', (socket) => {
     updateClients(io);
 
     socket.on('start-bots', (data) => {
-        const { ip, count, names, antiAfk } = data;
+        const { ip, count, names, antiAfk, version } = data;
         if (!ip) return;
 
         let cleanInput = ip.trim();
@@ -34,7 +34,7 @@ io.on('connection', (socket) => {
             const parts = cleanInput.split(':');
             targetHost = parts[0];
             targetPort = parseInt(parts[1], 10) || 25565;
-            spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, socket, io);
+            spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, version, socket, io);
         } else {
             io.emit('bot-log', { text: `[System] Pobieranie danych DNS dla ${targetHost}...`, type: 'info' });
             
@@ -43,10 +43,10 @@ io.on('connection', (socket) => {
                     targetHost = addresses[0].name;
                     targetPort = addresses[0].port;
                     io.emit('bot-log', { text: `[System] Wykryto port Aternosa: ${targetHost}:${targetPort}`, type: 'success' });
-                    spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, socket, io);
+                    spawnBotsBatch(targetHost, targetPort, count, names, antiAfk, version, socket, io);
                 } else {
                     io.emit('bot-log', { text: `[System] Brak rekordu SRV, próbuję połączyć się bezpośrednio z ${targetHost}:25565`, type: 'info' });
-                    spawnBotsBatch(targetHost, 25565, count, names, antiAfk, socket, io);
+                    spawnBotsBatch(targetHost, 25565, count, names, antiAfk, version, socket, io);
                 }
             });
         }
@@ -73,10 +73,10 @@ io.on('connection', (socket) => {
     });
 });
 
-function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
+function spawnBotsBatch(host, port, count, names, antiAfk, version, socket, io) {
     const maxBots = Math.min(parseInt(count, 10) || 1, 100);
-    console.log(`[BotManager] Kolejkowanie ${maxBots} botow dla ${host}:${port}`);
-    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów...`, type: 'info' });
+    console.log(`[BotManager] Kolejkowanie ${maxBots} botow dla ${host}:${port} (Wersja: ${version})`);
+    io.emit('bot-log', { text: `[System] Start kolejki ${maxBots} botów (Wersja: ${version})...`, type: 'info' });
 
     const RANDOM_PREFIXES = ['Kacper', 'Bartek', 'Stasiek', 'Mat', 'Pro', 'Xx', 'Super', 'Hyper', 'Shadow', 'Craft', 'Builder'];
 
@@ -91,13 +91,14 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
             }
 
             try {
+                // Jawna wersja pomija zablokowany przez Aternos ping na Renderze
                 const bot = mineflayer.createBot({
                     host: host,
                     port: port,
                     username: botName,
-                    version: false,
+                    version: version || '1.20.4', 
                     skipValidation: true,
-                    checkTimeoutInterval: 60000 // Skrócone do 60s, żeby szybciej wykryć zwiechę
+                    checkTimeoutInterval: 60000
                 });
 
                 const botData = {
@@ -123,13 +124,6 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
 
                     bot._client.on('connect', () => {
                         try { bot._client.socket.setKeepAlive(true, 0); } catch (e) {}
-                    });
-
-                    // Wyłapywanie błędów protokołu (np. keepalive timeout)
-                    bot._client.on('error', (err) => {
-                        botData.status = 'Błąd protokołu';
-                        updateClients(io);
-                        io.emit('bot-log', { text: `[${botName}] Błąd połączenia TCP: ${err.message}`, type: 'error' });
                     });
                 }
 
@@ -170,7 +164,7 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                 bot.on('error', (err) => {
                     botData.status = 'Błąd';
                     updateClients(io);
-                    io.emit('bot-log', { text: `[${botName}] Błąd: ${err.message}`, type: 'error' });
+                    io.emit('bot-log', { text: `[${botName}] Błąd sieciowy: ${err.message}`, type: 'error' });
                 });
 
                 bot.on('end', (reason) => {
