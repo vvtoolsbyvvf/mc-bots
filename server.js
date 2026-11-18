@@ -32,19 +32,31 @@ io.on('connection', (socket) => {
         const botPrefix = prefix || 'Bot_';
 
         console.log(`[BotManager] Kolejkowanie ${botCount} botow dla ${host}:${targetPort}`);
-        socket.emit('log', `[System] Start kolejki ${botCount} botów dla ${host}:${targetPort}...`);
+        socket.emit('log', `[System] Start sekwencyjnej kolejki ${botCount} botów dla ${host}:${targetPort}...`);
 
-        for (let i = 0; i < botCount; i++) {
-            setTimeout(() => {
-                const username = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
-                createBot(socket, {
-                    host: host.trim(),
-                    port: targetPort,
-                    username,
-                    version: version && version !== 'auto' ? version : false
-                });
-            }, i * 3500);
+        // Bezpieczne uruchamianie sekwencyjne (jeden po drugim)
+        let launched = 0;
+
+        function launchNext() {
+            if (launched >= botCount) return;
+
+            const username = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
+            createBot(socket, {
+                host: host.trim(),
+                port: targetPort,
+                username,
+                version: version && version !== 'auto' ? version : false
+            }, () => {
+                // Callback wywoływany gdy bot zakończy próbę wejścia (sukces lub błąd)
+                launched++;
+                if (launched < botCount) {
+                    socket.emit('log', `[System] Odczekuję 7 sekund przed dołączeniem kolejnego bota...`);
+                    setTimeout(launchNext, 7000); // 7 sekund przerwy, idealnie dla Aternosa
+                }
+            });
         }
+
+        launchNext();
     });
 
     socket.on('stop-bots', () => {
@@ -73,11 +85,20 @@ io.on('connection', (socket) => {
     });
 });
 
-function createBot(socket, options) {
+function createBot(socket, options, onFinished) {
     socket.emit('log', `[${options.username}] Łączenie z ${options.host}:${options.port}...`);
     console.log(`[Bot] Tworzenie instancji ${options.username} -> ${options.host}:${options.port}`);
 
     let bot;
+    let finishedCalled = false;
+
+    function finish() {
+        if (!finishedCalled) {
+            finishedCalled = true;
+            if (onFinished) onFinished();
+        }
+    }
+
     try {
         bot = mineflayer.createBot({
             host: options.host,
@@ -91,6 +112,7 @@ function createBot(socket, options) {
     } catch (err) {
         console.error(`[Bot Error Init] ${options.username}:`, err.message);
         socket.emit('log', `[${options.username}] Błąd inicjalizacji: ${err.message}`);
+        finish();
         return;
     }
 
@@ -100,6 +122,7 @@ function createBot(socket, options) {
         console.log(`[Bot] ${options.username} wszedl na serwer!`);
         socket.emit('log', `[${options.username}] ✅ Połączono i zespawnowano na serwerze!`);
         socket.emit('bot-count', bots.size);
+        finish(); // Bot wszedł, pozwól odpalić kolejnego
     });
 
     bot.on('messagestr', (message) => {
@@ -119,6 +142,7 @@ function createBot(socket, options) {
         socket.emit('log', `[${options.username}] ❌ Wyrzucony przez serwer: ${parsedReason}`);
         bots.delete(options.username);
         socket.emit('bot-count', bots.size);
+        finish();
     });
 
     bot.on('error', (err) => {
@@ -126,6 +150,7 @@ function createBot(socket, options) {
         socket.emit('log', `[${options.username}] ⚠️ Błąd połączenia: ${err.message}`);
         bots.delete(options.username);
         socket.emit('bot-count', bots.size);
+        finish();
     });
 
     bot.on('end', (reason) => {
@@ -133,6 +158,7 @@ function createBot(socket, options) {
         socket.emit('log', `[${options.username}] Rozłączono (${reason || 'koniec sesji'}).`);
         bots.delete(options.username);
         socket.emit('bot-count', bots.size);
+        finish();
     });
 }
 
