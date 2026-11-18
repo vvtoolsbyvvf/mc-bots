@@ -7,7 +7,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Prosty endpoint testowy dla Railway, żeby healthcheck nie zamykał kontenera
+// Endpoint healthcheck dla Railway
 app.get('/', (req, res) => {
     res.send('BotManager Backend Online');
 });
@@ -43,7 +43,7 @@ io.on('connection', (socket) => {
                     username,
                     version: version && version !== 'auto' ? version : false
                 });
-            }, i * 3500); // Odstęp 3.5s, żeby Aternos nie zbanował IP za flood
+            }, i * 3500);
         }
     });
 
@@ -86,7 +86,7 @@ function createBot(socket, options) {
             version: options.version,
             auth: 'offline',
             hideErrors: false,
-            connectTimeout: 15000
+            connectTimeout: 30000
         });
     } catch (err) {
         console.error(`[Bot Error Init] ${options.username}:`, err.message);
@@ -136,7 +136,6 @@ function createBot(socket, options) {
     });
 }
 
-// Dynamiczny port wymagany przez Railway
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`[Backend] Serwer ruszyl na porcie ${PORT}`);
