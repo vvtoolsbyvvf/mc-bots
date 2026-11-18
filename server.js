@@ -4,13 +4,8 @@ const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
 const dns = require('dns');
 
-// ZABEZPIECZENIE: Zapobiega wyłączeniu serwera przez cokolwiek
 process.on('uncaughtException', (err) => {
-    console.error('Wychwycono krytyczny błąd procesów (zapobiegno awarii):', err);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Wychwycono nieobsłużoną obietnicę:', reason);
+    console.error('Wychwycono krytyczny błąd procesów:', err);
 });
 
 const app = express();
@@ -102,8 +97,19 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                     username: botName,
                     version: false,
                     skipValidation: true,
-                    checkTimeoutInterval: 120000
+                    checkTimeoutInterval: 60000 // Skrócone do 60s, żeby szybciej wykryć zwiechę
                 });
+
+                const botData = {
+                    name: botName,
+                    status: 'Łączenie...',
+                    instance: bot,
+                    antiAfkInterval: null,
+                    ownerSocket: socket.id
+                };
+
+                activeBots.push(botData);
+                updateClients(io);
 
                 if (bot._client) {
                     bot._client.on('resource_pack_send', (packet) => {
@@ -119,37 +125,31 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
                         try { bot._client.socket.setKeepAlive(true, 0); } catch (e) {}
                     });
 
+                    // Wyłapywanie błędów protokołu (np. keepalive timeout)
                     bot._client.on('error', (err) => {
-                        io.emit('bot-log', { text: `[${botName}] Błąd klienta TCP: ${err.message}`, type: 'error' });
+                        botData.status = 'Błąd protokołu';
+                        updateClients(io);
+                        io.emit('bot-log', { text: `[${botName}] Błąd połączenia TCP: ${err.message}`, type: 'error' });
                     });
                 }
 
-                const botData = {
-                    name: botName,
-                    status: 'Łączenie...',
-                    instance: bot,
-                    antiAfkInterval: null,
-                    ownerSocket: socket.id
-                };
-
-                activeBots.push(botData);
-                updateClients(io);
-
                 bot.on('spawn', () => {
                     setTimeout(() => {
-                        botData.status = 'W grze';
-                        updateClients(io);
-                        io.emit('bot-log', { text: `[${botName}] Dołączył pomyślnie do serwera!`, type: 'success' });
+                        if (botData.status === 'Łączenie...') {
+                            botData.status = 'W grze';
+                            updateClients(io);
+                            io.emit('bot-log', { text: `[${botName}] Dołączył pomyślnie do serwera!`, type: 'success' });
 
-                        if (antiAfk) {
-                            botData.antiAfkInterval = setInterval(() => {
-                                try {
-                                    bot.setControlState('jump', true);
-                                    setTimeout(() => bot.setControlState('jump', false), 400);
-                                } catch (e) {}
-                            }, 30000);
+                            if (antiAfk) {
+                                botData.antiAfkInterval = setInterval(() => {
+                                    try {
+                                        bot.setControlState('jump', true);
+                                        setTimeout(() => bot.setControlState('jump', false), 400);
+                                    } catch (e) {}
+                                }, 30000);
+                            }
                         }
-                    }, 3000);
+                    }, 2000);
                 });
 
                 bot.on('chat', (username, message) => {
@@ -183,7 +183,7 @@ function spawnBotsBatch(host, port, count, names, antiAfk, socket, io) {
             } catch (err) {
                 console.error(`Błąd tworzenia bota: ${err.message}`);
             }
-        }, i * 1200);
+        }, i * 1500);
     }
 }
 
