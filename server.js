@@ -32,7 +32,7 @@ io.on('connection', (socket) => {
         const botPrefix = prefix || 'Bot_';
 
         console.log(`[BotManager] Kolejkowanie ${botCount} botow dla ${host}:${targetPort}`);
-        socket.emit('log', `[System] Start sekwencyjnej kolejki ${botCount} botów dla ${host}:${targetPort}...`);
+        socket.emit('log', `[System] Start rygorystycznej kolejki ${botCount} botów dla ${host}:${targetPort}...`);
 
         let launched = 0;
 
@@ -48,8 +48,9 @@ io.on('connection', (socket) => {
             }, () => {
                 launched++;
                 if (launched < botCount) {
-                    socket.emit('log', `[System] Odczekuję 7 sekund przed dołączeniem kolejnego bota...`);
-                    setTimeout(launchNext, 7000);
+                    console.log(`[BotManager] Czekam 10 sekund przed odpaleniem kolejnego bota (${launched}/${botCount})...`);
+                    socket.emit('log', `[System] Odczekuję 10 sekund przed dołączeniem kolejnego bota (ochrona przed throttlem)...`);
+                    setTimeout(launchNext, 10000); // Wydłużone do 10 sekund dla Aternosa
                 }
             });
         }
