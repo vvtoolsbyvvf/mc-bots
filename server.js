@@ -1,23 +1,18 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const net = require('net');
+const mineflayer = require('mineflayer');
 const cors = require('cors');
 
-// Zabezpieczenie przed crashem całego procesu Node.js
 process.on('uncaughtException', (err) => {
-    console.error('[CRASH GUARD] Wyłapano nieobsłużony błąd:', err.message);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('[CRASH GUARD] Wyłapano odrzuconą obietnicę:', reason);
+    console.error('[CRASH GUARD]', err.message);
 });
 
 const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-    res.send('BotManager Safe TCP Online');
+    res.send('BotManager Stable Backend Online');
 });
 
 const server = http.createServer(app);
@@ -28,81 +23,83 @@ const io = new Server(server, {
     }
 });
 
-let activeConnections = new Set();
+const activeBots = new Map();
+let botQueue = [];
+let isSpawning = false;
+
+function processQueue(socket) {
+    if (isSpawning || botQueue.length === 0) return;
+
+    isSpawning = true;
+    const botData = botQueue.shift();
+
+    socket.emit('log', `[System] Wypuszczam bota: ${botData.username} (w kolejce: ${botQueue.length})`);
+
+    createSafeBot(socket, botData, () => {
+        // 18 sekund przerwy – bezpieczny bufor dla zapory Aternosa
+        setTimeout(() => {
+            isSpawning = false;
+            processQueue(socket);
+        }, 18000);
+    });
+}
 
 io.on('connection', (socket) => {
-    console.log(`[Backend] Nowy klient z panela vvTools: ${socket.id}`);
+    console.log(`[Backend] Klient połączony: ${socket.id}`);
 
     socket.on('start-bots', (data) => {
         try {
-            const { host, port, count, prefix } = data;
-            const targetPort = parseInt(port) || 11670;
-            const botCount = parseInt(count) || 1;
-            const botPrefix = prefix || 'Bot_';
+            // Obsługujemy różne warianty kluczy przesyłanych z vvTools (host / address)
+            const rawHost = data.host || data.address || data.ip;
+            const targetPort = parseInt(data.port) || 11670;
+            const botCount = parseInt(data.count) || 1;
+            const botPrefix = data.prefix || 'Bot_';
+            const version = data.version && data.version !== 'auto' ? data.version : false;
 
-        console.log(`[TCP Test] Bezpieczny start ${botCount} socketów do ${host}:${targetPort}`);
-            socket.emit('log', `[System] Bezpieczny tryb TCP: Testuję połączenia do ${host}:${targetPort}...`);
-
-            let launched = 0;
-
-            function connectNext() {
-                if (launched >= botCount) return;
-
-                const botName = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
-                socket.emit('log', `[${botName}] Próba nawiązania TCP...`);
-
-                try {
-                    const client = new net.Socket();
-                    
-                    client.setTimeout(10000); // 10 sekund timeoutu na socket
-
-                    client.connect(targetPort, host.trim(), () => {
-                        socket.emit('log', `[${botName}] ✅ TCP połączone z Aternosem!`);
-                        activeConnections.add(client);
-                        socket.emit('bot-count', activeConnections.size);
-                    });
-
-                    client.on('timeout', () => {
-                        socket.emit('log', `[${botName}] ⚠️ Timeout TCP.`);
-                        try { client.destroy(); } catch(e) {}
-                    });
-
-                    client.on('error', (err) => {
-                        socket.emit('log', `[${botName}] ❌ Błąd TCP: ${err.message}`);
-                        try { client.destroy(); } catch(e) {}
-                    });
-
-                    client.on('close', () => {
-                        activeConnections.delete(client);
-                        try { socket.emit('bot-count', activeConnections.size); } catch(e) {}
-                    });
-
-                } catch (e) {
-                    console.error('[Socket Error]', e.message);
-                }
-
-                launched++;
-                setTimeout(connectNext, 3000);
+            if (!rawHost) {
+                socket.emit('log', `[System] ❌ Błąd: Nie podano adresu serwera!`);
+                return;
             }
 
-            connectNext();
+            const cleanHost = String(rawHost).trim();
+            socket.emit('log', `[System] Zlecenie: ${botCount} botów -> ${cleanHost}:${targetPort}`);
 
+            botQueue = [];
+            for (let i = 0; i < botCount; i++) {
+                const username = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
+                botQueue.push({
+                    host: cleanHost,
+                    port: targetPort,
+                    username,
+                    version
+                });
+            }
+
+            if (!isSpawning) {
+                processQueue(socket);
+            }
         } catch (err) {
-            console.error('[Start-Bots Error]', err.message);
-            socket.emit('log', `[System] Błąd krytyczny procedury: ${err.message}`);
+            console.error('[Start Error]', err.message);
+            socket.emit('log', `[System] Błąd krytyczny: ${err.message}`);
         }
     });
 
     socket.on('stop-bots', () => {
-        console.log(`[TCP Test] Zamykanie wszystkich socketów.`);
-        activeConnections.forEach((client) => {
-            try { client.destroy(); } catch(e) {}
+        botQueue = [];
+        isSpawning = false;
+        activeBots.forEach((bot) => {
+            try { bot.quit(); } catch (e) {}
         });
-        activeConnections.clear();
-        try {
-            socket.emit('log', `[System] Zamknięto wszystkie sockety TCP.`);
-            socket.emit('bot-count', 0);
-        } catch(e) {}
+        activeBots.clear();
+        socket.emit('log', `[System] Zatrzymano wszystkie boty.`);
+        socket.emit('bot-count', 0);
+    });
+
+    socket.on('send-chat', (message) => {
+        activeBots.forEach((bot) => {
+            if (bot && bot.player) bot.chat(message);
+        });
+        socket.emit('log', `[Czat] Wysłano: ${message}`);
     });
 
     socket.on('disconnect', () => {
@@ -110,7 +107,83 @@ io.on('connection', (socket) => {
     });
 });
 
+function createSafeBot(socket, options, onDone) {
+    socket.emit('log', `[${options.username}] Łączenie z ${options.host}:${options.port}...`);
+    
+    let bot;
+    let finished = false;
+
+    function finishTask() {
+        if (!finished) {
+            finished = true;
+            if (onDone) onDone();
+        }
+    }
+
+    try {
+        bot = mineflayer.createBot({
+            host: options.host,
+            port: options.port,
+            username: options.username,
+            version: options.version,
+            auth: 'offline',
+            hideErrors: false,
+            checkTimeoutInterval: 45000
+        });
+    } catch (err) {
+        socket.emit('log', `[${options.username}] Błąd inicjalizacji: ${err.message}`);
+        finishTask();
+        return;
+    }
+
+    activeBots.set(options.username, bot);
+
+    const connectionTimeout = setTimeout(() => {
+        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia. Zwalniam kolejkę.`);
+        try { bot.quit(); } catch(e) {}
+        activeBots.activeBots?.delete?.(options.username);
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
+        finishTask();
+    }, 20000);
+
+    bot.once('spawn', () => {
+        clearTimeout(connectionTimeout);
+        socket.emit('log', `[${options.username}] ✅ Zespawnowany na serwerze!`);
+        socket.emit('bot-count', activeBots.size);
+        setTimeout(finishTask, 2000);
+    });
+
+    bot.on('kicked', (reason) => {
+        clearTimeout(connectionTimeout);
+        let parsedReason = reason;
+        try {
+            const obj = JSON.parse(reason);
+            parsedReason = obj.text || JSON.stringify(obj);
+        } catch (e) {}
+
+        socket.emit('log', `[${options.username}] ❌ Wyrzucony: ${parsedReason}`);
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
+        finishTask();
+    });
+
+    bot.on('error', (err) => {
+        clearTimeout(connectionTimeout);
+        socket.emit('log', `[${options.username}] ⚠️ Błąd sieciowy: ${err.message}`);
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
+        finishTask();
+    });
+
+    bot.on('end', () => {
+        clearTimeout(connectionTimeout);
+        activeBots.delete(options.username);
+        socket.emit('bot-count', activeBots.size);
+    });
+}
+
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Backend] Serwer TCP ruszyl na porcie ${PORT}`);
+    console.log(`[Backend] Serwer ruszył na porcie ${PORT}`);
 });
