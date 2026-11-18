@@ -34,7 +34,6 @@ io.on('connection', (socket) => {
         console.log(`[BotManager] Kolejkowanie ${botCount} botow dla ${host}:${targetPort}`);
         socket.emit('log', `[System] Start sekwencyjnej kolejki ${botCount} botów dla ${host}:${targetPort}...`);
 
-        // Bezpieczne uruchamianie sekwencyjne (jeden po drugim)
         let launched = 0;
 
         function launchNext() {
@@ -47,11 +46,10 @@ io.on('connection', (socket) => {
                 username,
                 version: version && version !== 'auto' ? version : false
             }, () => {
-                // Callback wywoływany gdy bot zakończy próbę wejścia (sukces lub błąd)
                 launched++;
                 if (launched < botCount) {
                     socket.emit('log', `[System] Odczekuję 7 sekund przed dołączeniem kolejnego bota...`);
-                    setTimeout(launchNext, 7000); // 7 sekund przerwy, idealnie dla Aternosa
+                    setTimeout(launchNext, 7000);
                 }
             });
         }
@@ -122,7 +120,7 @@ function createBot(socket, options, onFinished) {
         console.log(`[Bot] ${options.username} wszedl na serwer!`);
         socket.emit('log', `[${options.username}] ✅ Połączono i zespawnowano na serwerze!`);
         socket.emit('bot-count', bots.size);
-        finish(); // Bot wszedł, pozwól odpalić kolejnego
+        finish();
     });
 
     bot.on('messagestr', (message) => {
