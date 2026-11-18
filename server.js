@@ -23,7 +23,7 @@ const io = new Server(server, {
 const bots = new Map();
 
 io.on('connection', (socket) => {
-    console.log(`[Backend] Nowy klient polaczony z panelem: ${socket.id}`);
+    console.log(`[Backend] Nowy klient polaczony z panelem vvTools: ${socket.id}`);
 
     socket.on('start-bots', (data) => {
         const { host, port, count, prefix, version } = data;
@@ -32,7 +32,7 @@ io.on('connection', (socket) => {
         const botPrefix = prefix || 'Bot_';
 
         console.log(`[BotManager] Start pętli dla ${botCount} botów -> ${host}:${targetPort}`);
-        socket.emit('log', `[System] Rozpoczynam bezpieczne wchodzenie ${botCount} botów (odstęp 12s)...`);
+        socket.emit('log', `[System] Rozpoczynam wchodzenie ${botCount} botów z ochroną przed zwisaniem...`);
 
         let index = 0;
 
@@ -52,12 +52,11 @@ io.on('connection', (socket) => {
                 username,
                 version: version && version !== 'auto' ? version : false
             }, () => {
-                // Ten callback wykona się niezależnie od tego czy bot wszedł, czy dostał kicka/error
                 index++;
                 if (index < botCount) {
-                    console.log(`[BotManager] Czekam 12 sekund przed kolejnym botem...`);
-                    socket.emit('log', `[System] Odczekuję 12 sekund przed następnym botem (ochrona Aternos)...`);
-                    setTimeout(launchNextBot, 12000); // Twarde 12 sekund przerwy
+                    console.log(`[BotManager] Czekam 10 sekund przed kolejnym botem...`);
+                    socket.emit('log', `[System] Odczekuję 10 sekund przed następnym botem...`);
+                    setTimeout(launchNextBot, 10000);
                 }
             });
         }
@@ -105,7 +104,6 @@ function createBot(socket, options, onFinished) {
         }
     }
 
-    // Zabezpieczenie przed nagłym wywaleniem błędu na poziomie Node/TCP
     try {
         bot = mineflayer.createBot({
             host: options.host,
@@ -114,7 +112,7 @@ function createBot(socket, options, onFinished) {
             version: options.version,
             auth: 'offline',
             hideErrors: false,
-            checkTimeoutInterval: 60000
+            checkTimeoutInterval: 30000
         });
     } catch (err) {
         console.error(`[Bot Error Init] ${options.username}:`, err.message);
@@ -125,13 +123,13 @@ function createBot(socket, options, onFinished) {
 
     bots.set(options.username, bot);
 
-    // Awaryjny timeout: gdyby bot zwisnął i nie dostał ani spawna ani kicka przez 15 sekund, zwolnij kolejkę
+    // Awaryjny timeout: jeśli bot utknie w stanie łączenia na 10 sekund, zwalniamy kolejkę
     const safetyTimer = setTimeout(() => {
-        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia (brak odpowiedzi serwera). Zwalniam kolejkę.`);
+        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia (brak spawna). Zwalniam kolejkę.`);
         try { bot.quit(); } catch(e) {}
         bots.delete(options.username);
         finish();
-    }, 15000);
+    }, 10000);
 
     bot.once('spawn', () => {
         clearTimeout(safetyTimer);
@@ -139,6 +137,10 @@ function createBot(socket, options, onFinished) {
         socket.emit('log', `[${options.username}] ✅ Połączono i zespawnowano na serwerze!`);
         socket.emit('bot-count', bots.size);
         finish();
+    });
+
+    bot.on('login', () => {
+        socket.emit('log', `[${options.username}] Zalogowano do protokołu TCP/Minecraft, oczekiwanie na spawn...`);
     });
 
     bot.on('messagestr', (message) => {
