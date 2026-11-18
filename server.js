@@ -31,31 +31,38 @@ io.on('connection', (socket) => {
         const botCount = parseInt(count) || 1;
         const botPrefix = prefix || 'Bot_';
 
-        console.log(`[BotManager] Kolejkowanie ${botCount} botow dla ${host}:${targetPort}`);
-        socket.emit('log', `[System] Start rygorystycznej kolejki ${botCount} botów dla ${host}:${targetPort}...`);
+        console.log(`[BotManager] Start pętli dla ${botCount} botów -> ${host}:${targetPort}`);
+        socket.emit('log', `[System] Rozpoczynam bezpieczne wchodzenie ${botCount} botów (odstęp 12s)...`);
 
-        let launched = 0;
+        let index = 0;
 
-        function launchNext() {
-            if (launched >= botCount) return;
+        function launchNextBot() {
+            if (index >= botCount) {
+                console.log(`[BotManager] Kolejka zakończona.`);
+                socket.emit('log', `[System] Wszystkie boty z kolejki zostały przetworzone.`);
+                return;
+            }
 
             const username = `${botPrefix}${Math.floor(1000 + Math.random() * 9000)}`;
+            console.log(`[BotManager] Odpalam bota #${index + 1}: ${username}`);
+
             createBot(socket, {
                 host: host.trim(),
                 port: targetPort,
                 username,
                 version: version && version !== 'auto' ? version : false
             }, () => {
-                launched++;
-                if (launched < botCount) {
-                    console.log(`[BotManager] Czekam 10 sekund przed odpaleniem kolejnego bota (${launched}/${botCount})...`);
-                    socket.emit('log', `[System] Odczekuję 10 sekund przed dołączeniem kolejnego bota (ochrona przed throttlem)...`);
-                    setTimeout(launchNext, 10000); // Wydłużone do 10 sekund dla Aternosa
+                // Ten callback wykona się niezależnie od tego czy bot wszedł, czy dostał kicka/error
+                index++;
+                if (index < botCount) {
+                    console.log(`[BotManager] Czekam 12 sekund przed kolejnym botem...`);
+                    socket.emit('log', `[System] Odczekuję 12 sekund przed następnym botem (ochrona Aternos)...`);
+                    setTimeout(launchNextBot, 12000); // Twarde 12 sekund przerwy
                 }
             });
         }
 
-        launchNext();
+        launchNextBot();
     });
 
     socket.on('stop-bots', () => {
@@ -98,6 +105,7 @@ function createBot(socket, options, onFinished) {
         }
     }
 
+    // Zabezpieczenie przed nagłym wywaleniem błędu na poziomie Node/TCP
     try {
         bot = mineflayer.createBot({
             host: options.host,
@@ -106,7 +114,7 @@ function createBot(socket, options, onFinished) {
             version: options.version,
             auth: 'offline',
             hideErrors: false,
-            connectTimeout: 30000
+            checkTimeoutInterval: 60000
         });
     } catch (err) {
         console.error(`[Bot Error Init] ${options.username}:`, err.message);
@@ -117,7 +125,16 @@ function createBot(socket, options, onFinished) {
 
     bots.set(options.username, bot);
 
+    // Awaryjny timeout: gdyby bot zwisnął i nie dostał ani spawna ani kicka przez 15 sekund, zwolnij kolejkę
+    const safetyTimer = setTimeout(() => {
+        socket.emit('log', `[${options.username}] ⚠️ Timeout połączenia (brak odpowiedzi serwera). Zwalniam kolejkę.`);
+        try { bot.quit(); } catch(e) {}
+        bots.delete(options.username);
+        finish();
+    }, 15000);
+
     bot.once('spawn', () => {
+        clearTimeout(safetyTimer);
         console.log(`[Bot] ${options.username} wszedl na serwer!`);
         socket.emit('log', `[${options.username}] ✅ Połączono i zespawnowano na serwerze!`);
         socket.emit('bot-count', bots.size);
@@ -131,6 +148,7 @@ function createBot(socket, options, onFinished) {
     });
 
     bot.on('kicked', (reason) => {
+        clearTimeout(safetyTimer);
         let parsedReason = reason;
         try {
             const obj = JSON.parse(reason);
@@ -145,6 +163,7 @@ function createBot(socket, options, onFinished) {
     });
 
     bot.on('error', (err) => {
+        clearTimeout(safetyTimer);
         console.error(`[Bot Error] ${options.username}:`, err.message);
         socket.emit('log', `[${options.username}] ⚠️ Błąd połączenia: ${err.message}`);
         bots.delete(options.username);
@@ -153,6 +172,7 @@ function createBot(socket, options, onFinished) {
     });
 
     bot.on('end', (reason) => {
+        clearTimeout(safetyTimer);
         console.log(`[Bot End] ${options.username}: ${reason}`);
         socket.emit('log', `[${options.username}] Rozłączono (${reason || 'koniec sesji'}).`);
         bots.delete(options.username);
